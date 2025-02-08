@@ -11,6 +11,11 @@ Launching the playbook:
 ansible-playbook -i x.x.x.x, -u root playbook/rabbitmq.yml --tags=rabbitmq --ask-vault-password
 ```
 
+Launching the role:
+```bash
+ansible-playbook -i x.x.x.x, -u root execute_role.yml --tags=rabbitmq --ask-vault-password
+```
+
 ### Scripts to manipulate the exchange / queue / messages
 
 Configuration is in "scripts/config.py" file

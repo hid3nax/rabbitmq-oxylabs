@@ -1,0 +1,257 @@
+---
+ - hosts: all
+   vars_files:
+    - vault.yml
+   tasks:
+    - name: Ensure we are running on Debian 12 (bookworm)
+      fail:
+        msg: "OS detection failure - make sure you are running Debian 12 (bookworm)"
+      when: 
+        - ansible_facts['distribution'] != "Debian" or ansible_facts['distribution_release'] != "bookworm"
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Ensure we have at least 200MB of disk space available
+      assert:
+        that: (ansible_mounts|selectattr("mount", "equalto", "/")|list)[0].size_available > 200 * 1024 * 1024
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Ensure necessary dependencies are installed
+      apt:
+        pkg:
+          - apt-transport-https
+          - gnupg
+          - iptables
+          - python3-pika
+        state: latest
+        update_cache: true
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Check if repo signature keys already exist
+      stat:
+        path: "{{ item }}"
+      register: key_files
+      loop:
+        - /usr/share/keyrings/com.rabbitmq.team.gpg
+        - /usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg
+        - /usr/share/keyrings/rabbitmq.9F4587F226208342.gpg
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Add required GPG keys
+      apt_key:
+        url: '{{ item.url }}'
+        state: present
+        keyring: '{{ item.path }}'
+      when: key_files.results | selectattr('stat.exists', 'equalto', False)
+      with_items:
+        - { url: "https://keys.openpgp.org/vks/v1/by-fingerprint/0A9AF2115F4687BD29803A206B73A36E6026DFCA", path: /usr/share/keyrings/com.rabbitmq.team.gpg }
+        - { url: "https://github.com/rabbitmq/signing-keys/releases/download/3.0/cloudsmith.rabbitmq-erlang.E495BB49CC4BBE5B.key", path: /usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg }
+        - { url: "https://github.com/rabbitmq/signing-keys/releases/download/3.0/cloudsmith.rabbitmq-server.9F4587F226208342.key", path: /usr/share/keyrings/rabbitmq.9F4587F226208342.gpg }
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Add RabbitMQ mirrors list for Debian
+      copy:
+        content: |
+          ## Provides modern Erlang/OTP releases from a Cloudsmith mirror
+          ##
+          deb [arch=amd64 signed-by=/usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg] https://ppa1.rabbitmq.com/rabbitmq/rabbitmq-erlang/deb/debian bookworm main
+          deb-src [signed-by=/usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg] https://ppa1.rabbitmq.com/rabbitmq/rabbitmq-erlang/deb/debian bookworm main
+
+          # another mirror for redundancy
+          deb [arch=amd64 signed-by=/usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg] https://ppa2.rabbitmq.com/rabbitmq/rabbitmq-erlang/deb/debian bookworm main
+          deb-src [signed-by=/usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg] https://ppa2.rabbitmq.com/rabbitmq/rabbitmq-erlang/deb/debian bookworm main
+
+          ## Provides RabbitMQ from a Cloudsmith mirror
+          ##
+          deb [arch=amd64 signed-by=/usr/share/keyrings/rabbitmq.9F4587F226208342.gpg] https://ppa1.rabbitmq.com/rabbitmq/rabbitmq-server/deb/debian bookworm main
+          deb-src [signed-by=/usr/share/keyrings/rabbitmq.9F4587F226208342.gpg] https://ppa1.rabbitmq.com/rabbitmq/rabbitmq-server/deb/debian bookworm main
+
+          # another mirror for redundancy
+          deb [arch=amd64 signed-by=/usr/share/keyrings/rabbitmq.9F4587F226208342.gpg] https://ppa2.rabbitmq.com/rabbitmq/rabbitmq-server/deb/debian bookworm main
+          deb-src [signed-by=/usr/share/keyrings/rabbitmq.9F4587F226208342.gpg] https://ppa2.rabbitmq.com/rabbitmq/rabbitmq-server/deb/debian bookworm main
+        dest: /etc/apt/sources.list.d/rabbitmq.list
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Install RabbitMQ and erlang packages
+      apt:
+        pkg:
+          - rabbitmq-server
+          - erlang-base
+          - erlang-asn1
+          - erlang-crypto
+          - erlang-eldap
+          - erlang-ftp
+          - erlang-inets
+          - erlang-mnesia
+          - erlang-os-mon
+          - erlang-parsetools
+          - erlang-public-key
+          - erlang-runtime-tools
+          - erlang-snmp
+          - erlang-ssl
+          - erlang-syntax-tools
+          - erlang-tftp
+          - erlang-tools
+          - erlang-xmerl
+        state: latest
+        update_cache: true
+      register: pkginstall
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Enable the admin / management plugin
+      rabbitmq_plugin:
+        names: rabbitmq_management
+        state: enabled
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Check if we have 'rabbitmqadmin' cli tool
+      stat:
+        path: /usr/local/bin/rabbitmqadmin
+      register: rabbitmqadmin
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Get the 'rabbitmqadmin' cli tool
+      get_url:
+        url: "http://localhost:15672/cli/rabbitmqadmin"
+        dest: /usr/local/bin/rabbitmqadmin
+        mode: '0755'
+      when: not rabbitmqadmin.stat.exists or pkginstall.changed
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Remove 'guest' user
+      rabbitmq_user:
+        user: guest
+        state: absent
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Create a 'testvhost'
+      rabbitmq_vhost:
+        name: /testvhost
+        state: present
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Create a 'testuser' and give it read/write permissions for 'testvhost'
+      rabbitmq_user:
+        name: testuser
+        password: '{{ rabbitmq_testuser_password }}'
+        vhost: "/testvhost"
+        configure_priv: ".*"
+        read_priv: ".*"
+        write_priv: ".*"
+        state: present
+        tags: administrator   # for web interface
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Ensure /etc/systemd/system/rabbitmq-server.service.d directory exists
+      file:
+        path: /etc/systemd/system/rabbitmq-server.service.d
+        state: directory
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Alter max open files limit for rabbitmq-server systemd service
+      copy:
+        content: |
+          [Service]
+          LimitNOFILE=100000
+        dest: /etc/systemd/system/rabbitmq-server.service.d/limits.conf
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Declare different ERL_MAX_PORTS value
+      lineinfile:
+        path: /etc/rabbitmq/rabbitmq-env.conf
+        regexp: ^ERL_MAX_PORTS=
+        line: 'ERL_MAX_PORTS=131072'
+        create: yes
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Restart rabbitmq-server.service
+      systemd:
+        state: restarted
+        daemon_reload: yes
+        enabled: yes
+        name: rabbitmq-server.service
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Deploy simple firewall script
+      copy:
+        content: |
+          #!/bin/bash
+
+          fw='/usr/sbin/iptables'
+
+          $fw -P INPUT ACCEPT
+          $fw -F
+          $fw -X
+
+          $fw -A INPUT -m state --state established,related -j ACCEPT
+          $fw -A INPUT -p tcp --syn -m multiport --destination-ports 22,15672 -j ACCEPT
+          $fw -A INPUT -p tcp --syn --dport 5672 -s 127.0.0.1 -j ACCEPT
+          $fw -P INPUT DROP
+        dest: /usr/local/sbin/firewall
+        mode: '0755'
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Prepare firewall systemd service file
+      copy:
+        content: |
+          [Unit]
+          Description=Firewall based on iptables
+          After=syslog.target network.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/firewall
+          ExecStop=/usr/sbin/iptables -P INPUT ACCEPT
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/firewall.service
+      tags:
+        - never
+        - rabbitmq
+
+    - name: Ensure firewall service is started
+      systemd:
+        state: started
+        daemon_reload: yes
+        enabled: yes
+        name: firewall.service
+      tags:
+        - never
+        - rabbitmq
